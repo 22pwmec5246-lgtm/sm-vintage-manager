@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="ur" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SM Vintage Manager</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#059669', // Emerald 600
+                        secondary: '#14b8a6', // Teal 500
+                        accent: '#f59e0b', // Amber 500
+                        dark: '#1e293b',
+                        light: '#f8fafc'
+                    },
+                    borderRadius: {
+                        '2xl': '1rem',
+                        '3xl': '1.5rem',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for in-browser JSX compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@400;700&display=swap');
+        
+        body {
+            font-family: 'Noto Nastaliq Urdu', system-ui, -apple-system, sans-serif;
+            background-color: #f1f5f9;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* Large Inputs & Buttons for Mobile */
+        input, select, textarea {
+            font-size: 1.1rem !important;
+            padding: 0.75rem 1rem !important;
+            border-radius: 1rem !important;
+        }
+        button {
+            min-height: 52px;
+            font-size: 1.1rem !important;
+        }
+
+        /* Bird Animation */
+        @keyframes flyBird {
+            0% { transform: translate(-100px, 20px) scaleX(1); }
+            45% { transform: translate(120px, -30px) scaleX(1); }
+            50% { transform: translate(120px, -30px) scaleX(-1); }
+            95% { transform: translate(-100px, 20px) scaleX(-1); }
+            100% { transform: translate(-100px, 20px) scaleX(1); }
+        }
+        .bird-anim {
+            animation: flyBird 6s ease-in-out infinite;
+            display: inline-block;
+            position: absolute;
+            z-index: 10;
+        }
+
+        /* Hide scrollbar for clean UI */
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
+
+        /* Print Styles */
+        @media print {
+            .no-print { display: none !important; }
+            body { background: white; }
+            .print-card { box-shadow: none !important; border: 1px solid #ddd; }
+        }
+    </style>
+</head>
+<body class="text-dark pb-20">
+
+    <div id="root"></div>
+
+    <!-- PWA & Offline Setup -->
+    <script>
+        // 1. Generate Manifest dynamically
+        const manifest = {
+            name: "SM Vintage Manager",
+            short_name: "SM Vintage",
+            start_url: location.href,
+            display: "standalone",
+            background_color: "#059669",
+            theme_color: "#059669",
+            icons: [
+                {
+                    src: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzA1OTY2OSI+PHBhdGggZD0iTTEyIDJMMiAxMmgydjhoOHYtNmg0djZoOHYtOGgyTDEyIDJ6Ii8+PC9zdmc+",
+                    sizes: "192x192",
+                    type: "image/svg+xml"
+                }
+            ]
+        };
+        const manifestBlob = new Blob([JSON.stringify(manifest)], {type: 'application/json'});
+        const manifestURL = URL.createObjectURL(manifestBlob);
+        const link = document.createElement('link');
+        link.rel = 'manifest';
+        link.href = manifestURL;
+        document.head.appendChild(link);
+
+        // 2. Service Worker Setup
+        // نوٹ: براؤزر سیکیورٹی کی وجہ سے Blob URL کے ذریعے سروس ورکر رجسٹر نہیں ہو سکتا۔
+        // لائیو ہوسٹنگ (PWA) کے وقت ایک الگ 'sw.js' فائل بنانا بہتر ہے۔
+        if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {
+            navigator.serviceWorker.register('./sw.js').catch(err => {
+                console.warn("Service Worker registration skipped (Expected if sw.js is missing).");
+            });
+        }
+    </script>
+
+    <!-- App Logic (React JSX) -->
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // ==========================================
+        // DATABASE WRAPPER (IndexedDB)
+        // ==========================================
+        const DB_NAME = 'SMVintageDB';
+        const DB_VERSION = 1;
+
+        const initDB = () => {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(DB_NAME, DB_VERSION);
+                req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'id' });
+                    if (!db.objectStoreNames.contains('stock')) db.createObjectStore('stock', { keyPath: 'id' });
+                    if (!db.objectStoreNames.contains('customers')) db.createObjectStore('customers', { keyPath: 'id' });
+                    if (!db.objectStoreNames.contains('sales')) db.createObjectStore('sales', { keyPath: 'id' });
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        };
+
+        const dbOp = async (storeName, operation, data = null) => {
+            const db = await initDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(storeName, operation === 'get' || operation === 'getAll' ? 'readonly' : 'readwrite');
+                const store = tx.objectStore(storeName);
+                let req;
+                if (operation === 'getAll') req = store.getAll();
+                else if (operation === 'get') req = store.get(data);
+                else if (operation === 'put') req = store.put(data);
+                else if (operation === 'delete') req = store.delete(data);
+                else if (operation === 'clear') req = store.clear();
+                
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        };
+
+        // ==========================================
+        // SVG ICONS COMPONENT
+        // ==========================================
+        const Icon = ({ name, className = "w-6 h-6" }) => {
+            const icons = {
+                home: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />,
+                box: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />,
+                plus: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />,
+                users: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />,
+                chart: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />,
+                cog: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />,
+                whatsapp: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 21l1.65-3.8a9 9 0 113.4 2.9L3 21z" />,
+                bird: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.05 11a1 1 0 01.62-.91l6-2.5a1 1 0 01.76 0l6 2.5a1 1 0 01.62.91v.44a5 5 0 01-2 4L12 18l-3.05-2.56a5 5 0 01-2-4v-.44zM12 5a3 3 0 00-3 3v1h6V8a3 3 0 00-3-3z" />
+            };
+            return <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">{icons[name] || icons.home}</svg>;
+        };
+
+        // ==========================================
+        // MAIN APP COMPONENT
+        // ==========================================
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('splash');
+            const [data, setData] = useState({ stock: [], customers: [], sales: [], settings: {} });
+            const [loading, setLoading] = useState(true);
+
+            // Load all data
+            const loadData = async () => {
+                try {
+                    const settings = await dbOp('settings', 'get', 'config') || { id: 'config', logo: null, adminPin: '1234' };
+                    let stock = await dbOp('stock', 'getAll');
+                    const customers = await dbOp('customers', 'getAll');
+                    const sales = await dbOp('sales', 'getAll');
+
+                    // Default Stock Entry if empty
+                    if (stock.length === 0) {
+                        const defaultStock = { id: 1, item: 'Printed T-Shirts', container: 'Full Container', totalBales: 600, weightPerBale: 45, soldBales: 0 };
+                        await dbOp('stock', 'put', defaultStock);
+                        stock = [defaultStock];
+                    }
+
+                    setData({ stock, customers, sales, settings });
+                    setLoading(false);
+                } catch (e) {
+                    console.error("Data Load Error:", e);
+                    alert("ڈیٹا لوڈ کرنے میں مسئلہ ہے۔");
+                }
+            };
+
+            useEffect(() => { loadData(); }, []);
+
+            if (loading) return <div className="h-screen flex items-center justify-center text-primary text-2xl font-bold">لوڈ ہو رہا ہے...</div>;
+
+            return (
+                <div className="max-w-md mx-auto min-h-screen bg-light shadow-2xl relative overflow-hidden">
+                    
+                    {/* Screens */}
+                    <div className="h-full overflow-y-auto pb-24 p-4">
+                        {activeTab === 'splash' && <SplashScreen settings={data.settings} onEnter={() => setActiveTab('dashboard')} reload={loadData} />}
+                        {activeTab === 'dashboard' && <Dashboard data={data} />}
+                        {activeTab === 'stock' && <Stock data={data} reload={loadData} />}
+                        {activeTab === 'order' && <NewOrder data={data} reload={loadData} setActiveTab={setActiveTab} />}
+                        {activeTab === 'customers' && <Customers data={data} reload={loadData} />}
+                        {activeTab === 'reports' && <Reports data={data} />}
+                        {activeTab === 'settings' && <Settings data={data} reload={loadData} />}
+                    </div>
+
+                    {/* Bottom Navigation */}
+                    {activeTab !== 'splash' && (
+                        <div className="fixed bottom-0 left-0 right-0 bg-white shadow-[0_-10px_40px_rgba(0,0,0,0.08)] rounded-t-3xl max-w-md mx-auto flex justify-between px-2 py-3 z-50 no-print">
+                            <NavItem icon="home" label="ڈیش بورڈ" active={activeTab==='dashboard'} onClick={() => setActiveTab('dashboard')} />
+                            <NavItem icon="box" label="اسٹاک" active={activeTab==='stock'} onClick={() => setActiveTab('stock')} />
+                            <NavItem icon="plus" label="نیا آرڈر" active={activeTab==='order'} onClick={() => setActiveTab('order')} special />
+                            <NavItem icon="users" label="کسٹمرز" active={activeTab==='customers'} onClick={() => setActiveTab('customers')} />
+                            <NavItem icon="chart" label="رپورٹس" active={activeTab==='reports'} onClick={() => setActiveTab('reports')} />
+                            <NavItem icon="cog" label="سیٹنگز" active={activeTab==='settings'} onClick={() => setActiveTab('settings')} />
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const NavItem = ({ icon, label, active, onClick, special }) => (
+            <button onClick={onClick} className={`flex flex-col items-center justify-center w-16 transition-all ${special ? '-mt-8' : ''}`}>
+                <div className={`${special ? 'bg-primary text-white p-4 rounded-full shadow-lg border-4 border-light transform hover:scale-105' : (active ? 'text-primary' : 'text-gray-400')}`}>
+                    <Icon name={icon} className={special ? 'w-8 h-8' : 'w-6 h-6'} />
+                </div>
+                {!special && <span className={`text-[10px] mt-1 font-bold ${active ? 'text-primary' : 'text-gray-400'}`}>{label}</span>}
+            </button>
+        );
+
+        // ==========================================
+        // 1. SPLASH SCREEN
+        // ==========================================
+        const SplashScreen = ({ settings, onEnter, reload }) => {
+            const handleLogoUpload = async (e) => {
+                const file = e.target.files[0];
+                if(file) {
+                    const reader = new FileReader();
+                    reader.onload = async (event) => {
+                        const newSettings = { ...settings, logo: event.target.result };
+                        await dbOp('settings', 'put', newSettings);
+                        reload();
+                    };
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            return (
+                <div className="flex flex-col items-center justify-center min-h-[90vh] text-center space-y-8 animate-fade-in">
+                    <div className="relative pt-10">
+                        {/* Animated Bird */}
+                        <div className="bird-anim text-accent">
+                            <Icon name="bird" className="w-12 h-12" />
+                        </div>
+                        
+                        {/* Logo Area */}
+                        <div className="w-40 h-40 mx-auto bg-white rounded-full shadow-2xl border-4 border-primary flex items-center justify-center overflow-hidden relative">
+                            {settings.logo ? (
+                                <img src={settings.logo} alt="Logo" className="w-full h-full object-cover" />
+                            ) : (
+                                <span className="text-gray-400 text-sm">لوگو اپلوڈ کریں</span>
+                            )}
+                            <input type="file" accept="image/*" onChange={handleLogoUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
+                        </div>
+                    </div>
+
+                    <div>
+                        <h1 className="text-4xl font-bold text-primary mb-2">Welcome جناب</h1>
+                        <p className="text-lg text-gray-600">SM Vintage Manager میں خوش آمدید</p>
+                    </div>
+
+                    <button onClick={onEnter} className="w-full max-w-xs bg-gradient-to-r from-primary to-secondary text-white py-4 rounded-2xl font-bold text-xl shadow-lg hover:shadow-xl active:scale-95 transition-all mt-10">
+                        ایپ میں داخل ہوں
+                    </button>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 2. DASHBOARD
+        // ==========================================
+        const Dashboard = ({ data }) => {
+            const { sales, stock, customers } = data;
+            
+            const today = new Date().toISOString().split('T')[0];
+            const currentMonth = today.substring(0, 7);
+
+            let todaySale = 0, monthSale = 0, monthProfit = 0, totalDue = 0;
+            sales.forEach(s => {
+                const sDate = s.date.split('T')[0];
+                const profit = s.totalSale - s.totalCost;
+                
+                if (sDate === today) todaySale += s.totalSale;
+                if (sDate.startsWith(currentMonth)) {
+                    monthSale += s.totalSale;
+                    monthProfit += profit;
+                }
+                totalDue += s.dueAmount;
+            });
+
+            const currentStock = stock[0] || { totalBales: 0, soldBales: 0 };
+            const available = currentStock.totalBales - currentStock.soldBales;
+
+            // Top Customers
+            const custSales = {};
+            sales.forEach(s => { custSales[s.customerId] = (custSales[s.customerId] || 0) + s.totalSale; });
+            const topCustomers = Object.entries(custSales)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5)
+                .map(([id, total]) => ({ ...customers.find(c => c.id == id), total }));
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-bold text-dark">ڈیش بورڈ</h2>
+                        <span className="bg-white px-4 py-2 rounded-xl shadow text-sm font-bold text-primary">{today}</span>
+                    </div>
+
+                    {/* Widgets Grid */}
+                    <div className="grid grid-cols-2 gap-4">
+                        <Widget title="آج کی سیل" value={`Rs ${todaySale.toLocaleString()}`} color="bg-blue-500" />
+                        <Widget title="دستیاب اسٹاک" value={`${available} بیلز`} color="bg-emerald-500" />
+                        <Widget title="ماہانہ سیل" value={`Rs ${monthSale.toLocaleString()}`} color="bg-purple-500" />
+                        <Widget title="ماہانہ منافع" value={`Rs ${monthProfit.toLocaleString()}`} color="bg-accent" />
+                    </div>
+
+                    <div className="bg-white rounded-3xl p-6 shadow-xl border border-red-100">
+                        <h3 className="text-gray-500 text-sm mb-1">مارکیٹ میں بقایا جات (Unpaid)</h3>
+                        <p className="text-3xl font-bold text-red-500">Rs {totalDue.toLocaleString()}</p>
+                    </div>
+
+                    <div className="bg-white rounded-3xl p-6 shadow-xl">
+                        <h3 className="text-lg font-bold mb-4 border-b pb-2">ٹاپ 5 کسٹمرز</h3>
+                        {topCustomers.map((c, i) => (
+                            <div key={i} className="flex justify-between items-center py-2 border-b last:border-0">
+                                <div>
+                                    <p className="font-bold">{c.name || 'نامعلوم'}</p>
+                                    <p className="text-xs text-gray-500">{c.city}</p>
+                                </div>
+                                <p className="font-bold text-primary">Rs {c.total?.toLocaleString()}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const Widget = ({ title, value, color }) => (
+            <div className={`${color} rounded-3xl p-5 text-white shadow-lg`}>
+                <p className="text-sm opacity-80 mb-1">{title}</p>
+                <p className="text-xl font-bold">{value}</p>
+            </div>
+        );
+
+        // ==========================================
+        // 3. STOCK
+        // ==========================================
+        const Stock = ({ data, reload }) => {
+            const { stock, settings } = data;
+            const currentStock = stock[0] || {};
+            const available = (currentStock.totalBales || 0) - (currentStock.soldBales || 0);
+            
+            const handleEdit = async () => {
+                const pin = prompt("اسٹاک تبدیل کرنے کیلئے Admin PIN درج کریں:");
+                if (pin === settings.adminPin) {
+                    const newTotal = prompt("کل بیلز (Total Bales) کی تعداد لکھیں:", currentStock.totalBales);
+                    if (newTotal !== null && !isNaN(newTotal)) {
+                        await dbOp('stock', 'put', { ...currentStock, totalBales: parseInt(newTotal) });
+                        alert("اسٹاک اپڈیٹ ہو گیا۔");
+                        reload();
+                    }
+                } else if (pin !== null) {
+                    alert("غلط PIN!");
+                }
+            };
+
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-2xl font-bold text-dark mb-4">اسٹاک کی تفصیل</h2>
+                    
+                    <div className="bg-white rounded-3xl p-6 shadow-xl space-y-4 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-primary opacity-5 rounded-bl-full"></div>
+                        
+                        <div className="flex justify-between items-center border-b pb-4">
+                            <h3 className="text-xl font-bold text-primary">{currentStock.item}</h3>
+                            <span className="bg-gray-100 text-gray-600 px-3 py-1 rounded-lg text-sm">{currentStock.container}</span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 text-center pt-2">
+                            <div className="bg-gray-50 p-4 rounded-2xl">
+                                <p className="text-gray-500 text-sm">کل بیلز</p>
+                                <p className="text-2xl font-bold text-dark">{currentStock.totalBales}</p>
+                            </div>
+                            <div className="bg-gray-50 p-4 rounded-2xl">
+                                <p className="text-gray-500 text-sm">فروخت شدہ</p>
+                                <p className="text-2xl font-bold text-red-500">{currentStock.soldBales}</p>
+                            </div>
+                        </div>
+
+                        <div className="bg-emerald-50 p-5 rounded-2xl text-center border border-emerald-100">
+                            <p className="text-emerald-600 font-bold mb-1">موجودہ دستیاب اسٹاک</p>
+                            <p className="text-4xl font-bold text-primary">{available}</p>
+                        </div>
+                        
+                        <p className="text-center text-sm text-gray-500">فی بیل وزن: {currentStock.weightPerBale} kg</p>
+
+                        <button onClick={handleEdit} className="w-full mt-4 bg-gray-800 text-white py-4 rounded-2xl font-bold hover:bg-black transition-colors">
+                            اسٹاک تبدیل کریں (Admin)
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 4. NEW ORDER / SALES
+        // ==========================================
+        const NewOrder = ({ data, reload, setActiveTab }) => {
+            const { stock, customers } = data;
+            const currentStock = stock[0];
+            const available = currentStock.totalBales - currentStock.soldBales;
+
+            const [form, setForm] = useState({
+                customerId: '', newCustomerName: '', newCustomerPhone: '', newCustomerCity: '',
+                qty: '', costPerBale: '', salePerBale: '',
+                status: 'Paid', paidAmount: '', note: ''
+            });
+
+            const qty = parseFloat(form.qty) || 0;
+            const cost = parseFloat(form.costPerBale) || 0;
+            const sale = parseFloat(form.salePerBale) || 0;
+            const totalCost = qty * cost;
+            const totalSale = qty * sale;
+            const profit = totalSale - totalCost;
+            
+            let paid = 0;
+            if (form.status === 'Paid') paid = totalSale;
+            else if (form.status === 'Partial') paid = parseFloat(form.paidAmount) || 0;
+            const dueAmount = totalSale - paid;
+
+            const handleSave = async (e) => {
+                e.preventDefault();
+                if (qty <= 0) return alert("مقدار درج کریں۔");
+                if (qty > available) return alert(`اسٹاک میں صرف ${available} بیلز دستیاب ہیں۔`);
+                if (!form.customerId && !form.newCustomerName) return alert("کسٹمر منتخب کریں یا نیا بنائیں۔");
+
+                let cId = form.customerId;
+                // Create new customer if needed
+                if (!cId) {
+                    cId = Date.now();
+                    await dbOp('customers', 'put', {
+                        id: cId, name: form.newCustomerName, phone: form.newCustomerPhone, city: form.newCustomerCity, note: ''
+                    });
+                }
+
+                const invoiceNo = `INV-${Date.now().toString().slice(-6)}`;
+                const saleData = {
+                    id: Date.now(),
+                    invoiceNo,
+                    date: new Date().toISOString(),
+                    customerId: cId,
+                    qty, costPerBale: cost, salePerBale: sale,
+                    totalCost, totalSale, profit,
+                    status: form.status, paidAmount: paid, dueAmount,
+                    note: form.note
+                };
+
+                // Update Stock
+                await dbOp('stock', 'put', { ...currentStock, soldBales: currentStock.soldBales + qty });
+                // Save Sale
+                await dbOp('sales', 'put', saleData);
+                
+                alert("آرڈر کامیابی سے محفوظ ہو گیا!");
+                reload();
+
+                // WhatsApp Share Option
+                let cName = form.newCustomerName || customers.find(c=>c.id==cId)?.name || 'Customer';
+                let cPhone = form.newCustomerPhone || customers.find(c=>c.id==cId)?.phone || '';
+                
+                const msg = `SM Vintage\nInvoice #: ${invoiceNo}\nCustomer: ${cName}\nQty (Bales): ${qty}\nTotal: Rs ${totalSale}\nPaid: Rs ${paid}\nDue: Rs ${dueAmount}\nProfit: Rs ${profit}\nShukriya!`;
+                
+                if (confirm("کیا آپ کسٹمر کو انوائس WhatsApp کرنا چاہتے ہیں؟")) {
+                    const waUrl = `https://wa.me/${cPhone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(msg)}`;
+                    window.open(waUrl, '_blank');
+                }
+                
+                setActiveTab('dashboard');
+            };
+
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-2xl font-bold text-dark">نیا آرڈر</h2>
+                    
+                    <form onSubmit={handleSave} className="bg-white rounded-3xl p-6 shadow-xl space-y-5">
+                        {/* Customer Section */}
+                        <div className="space-y-3 p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                            <label className="font-bold text-gray-700">کسٹمر منتخب کریں</label>
+                            <select 
+                                className="w-full bg-white border outline-none focus:border-primary"
+                                value={form.customerId} 
+                                onChange={e => setForm({...form, customerId: e.target.value})}
+                            >
+                                <option value="">--- نیا کسٹمر بنائیں ---</option>
+                                {customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.city})</option>)}
+                            </select>
+
+                            {!form.customerId && (
+                                <div className="space-y-3 pt-2">
+                                    <input type="text" placeholder="کسٹمر کا نام *" required className="w-full border" value={form.newCustomerName} onChange={e=>setForm({...form, newCustomerName: e.target.value})} />
+                                    <input type="tel" placeholder="فون نمبر (WhatsApp)" className="w-full border" value={form.newCustomerPhone} onChange={e=>setForm({...form, newCustomerPhone: e.target.value})} />
+                                    <input type="text" placeholder="شہر" className="w-full border" value={form.newCustomerCity} onChange={e=>setForm({...form, newCustomerCity: e.target.value})} />
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Order Details */}
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className="text-sm font-bold text-gray-600 block mb-1">مقدار (بیلز) *</label>
+                                <input type="number" required min="1" max={available} className="w-full border bg-emerald-50" placeholder={`دستیاب: ${available}`} value={form.qty} onChange={e=>setForm({...form, qty: e.target.value})} />
+                            </div>
+                            <div>
+                                <label className="text-sm font-bold text-gray-600 block mb-1">سٹیٹس</label>
+                                <select className="w-full border" value={form.status} onChange={e=>setForm({...form, status: e.target.value})}>
+                                    <option value="Paid">مکمل ادا شدہ (Paid)</option>
+                                    <option value="Partial">کچھ ادا شدہ (Partial)</option>
+                                    <option value="Unpaid">ادھار (Unpaid)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className="text-sm font-bold text-gray-600 block mb-1">خرید قیمت (فی بیل)</label>
+                                <input type="number" required className="w-full border" value={form.costPerBale} onChange={e=>setForm({...form, costPerBale: e.target.value})} />
+                            </div>
+                            <div>
+                                <label className="text-sm font-bold text-gray-600 block mb-1">سیل قیمت (فی بیل) *</label>
+                                <input type="number" required className="w-full border" value={form.salePerBale} onChange={e=>setForm({...form, salePerBale: e.target.value})} />
+                            </div>
+                        </div>
+
+                        {form.status === 'Partial' && (
+                            <div>
+                                <label className="text-sm font-bold text-gray-600 block mb-1">ادا شدہ رقم *</label>
+                                <input type="number" required className="w-full border border-accent" value={form.paidAmount} onChange={e=>setForm({...form, paidAmount: e.target.value})} />
+                            </div>
+                        )}
+
+                        {/* Calculations Box */}
+                        <div className="bg-gray-800 text-white p-5 rounded-2xl space-y-2">
+                            <div className="flex justify-between"><span>کل بل (Total):</span> <span className="font-bold">Rs {totalSale.toLocaleString()}</span></div>
+                            <div className="flex justify-between text-emerald-400"><span>ادا شدہ (Paid):</span> <span className="font-bold">Rs {paid.toLocaleString()}</span></div>
+                            <div className="flex justify-between text-red-400 border-t border-gray-600 pt-2 mt-2"><span>بقیہ (Due):</span> <span className="font-bold text-lg">Rs {dueAmount.toLocaleString()}</span></div>
+                            <div className="flex justify-between text-accent text-sm opacity-80 pt-1"><span>منافع (Profit):</span> <span>Rs {profit.toLocaleString()}</span></div>
+                        </div>
+
+                        <textarea placeholder="کوئی نوٹ لکھیں (اختیاری)" className="w-full border h-24" value={form.note} onChange={e=>setForm({...form, note: e.target.value})}></textarea>
+
+                        <button type="submit" className="w-full bg-primary text-white py-4 rounded-2xl font-bold text-xl shadow-lg hover:bg-emerald-700 active:scale-95 transition-all">
+                            آرڈر محفوظ کریں
+                        </button>
+                    </form>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 5. CUSTOMERS
+        // ==========================================
+        const Customers = ({ data }) => {
+            const { customers } = data;
+            const [search, setSearch] = useState('');
+
+            const filtered = customers.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || (c.city && c.city.toLowerCase().includes(search.toLowerCase())) || (c.phone && c.phone.includes(search)));
+
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-2xl font-bold text-dark mb-4">کسٹمرز کی فہرست</h2>
+                    
+                    <input type="text" placeholder="نام، شہر یا فون سے تلاش کریں..." className="w-full border-2 border-primary shadow-sm" value={search} onChange={e=>setSearch(e.target.value)} />
+
+                    <div className="space-y-4">
+                        {filtered.map(c => (
+                            <div key={c.id} className="bg-white p-5 rounded-3xl shadow-lg border border-gray-100 flex flex-col space-y-3">
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <h3 className="text-xl font-bold text-dark">{c.name}</h3>
+                                        <p className="text-gray-500 text-sm">{c.city || 'شہر نامعلوم'}</p>
+                                    </div>
+                                    {c.phone && (
+                                        <div className="flex gap-2">
+                                            <a href={`tel:${c.phone}`} className="bg-blue-100 p-3 rounded-full text-blue-600"><Icon name="chart" className="w-5 h-5 hidden" /> 📞</a>
+                                            <a href={`https://wa.me/${c.phone.replace(/[^0-9]/g, '')}`} target="_blank" className="bg-green-100 p-3 rounded-full text-green-600"><Icon name="whatsapp" className="w-5 h-5" /></a>
+                                        </div>
+                                    )}
+                                </div>
+                                {c.phone && <p className="text-gray-600 dir-ltr text-left font-mono">{c.phone}</p>}
+                            </div>
+                        ))}
+                        {filtered.length === 0 && <p className="text-center text-gray-400 py-10">کوئی کسٹمر نہیں ملا</p>}
+                    </div>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 6. REPORTS
+        // ==========================================
+        const Reports = ({ data }) => {
+            const { sales, customers } = data;
+            
+            const handlePrint = () => window.print();
+
+            const exportCSV = () => {
+                let csvContent = "data:text/csv;charset=utf-8,";
+                csvContent += "Invoice,Date,Customer,Qty,Total Sale,Paid,Due,Profit\n";
+                sales.forEach(s => {
+                    const cName = customers.find(c=>c.id==s.customerId)?.name || 'Unknown';
+                    const date = s.date.split('T')[0];
+                    csvContent += `${s.invoiceNo},${date},${cName},${s.qty},${s.totalSale},${s.paidAmount},${s.dueAmount},${s.profit}\n`;
+                });
+                const encodedUri = encodeURI(csvContent);
+                const link = document.createElement("a");
+                link.setAttribute("href", encodedUri);
+                link.setAttribute("download", `sm_vintage_reports_${new Date().toISOString().split('T')[0]}.csv`);
+                document.body.appendChild(link);
+                link.click();
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center no-print">
+                        <h2 className="text-2xl font-bold text-dark">رپورٹس</h2>
+                        <div className="flex gap-2">
+                            <button onClick={exportCSV} className="bg-gray-800 text-white px-4 py-2 rounded-xl text-sm">CSV</button>
+                            <button onClick={handlePrint} className="bg-primary text-white px-4 py-2 rounded-xl text-sm">Print</button>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-3xl p-4 shadow-xl print-card">
+                        <table className="w-full text-sm text-right">
+                            <thead>
+                                <tr className="border-b-2 border-gray-200 text-gray-600">
+                                    <th className="py-3">تاریخ / بل #</th>
+                                    <th className="py-3">کسٹمر</th>
+                                    <th className="py-3">مقدار</th>
+                                    <th className="py-3 text-left">بقایا</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {sales.slice().reverse().map(s => (
+                                    <tr key={s.id} className="border-b border-gray-100 last:border-0">
+                                        <td className="py-3">
+                                            <div className="font-bold text-xs">{s.invoiceNo}</div>
+                                            <div className="text-gray-400 text-[10px]">{s.date.split('T')[0]}</div>
+                                        </td>
+                                        <td className="py-3 truncate max-w-[80px]">{customers.find(c=>c.id==s.customerId)?.name}</td>
+                                        <td className="py-3">{s.qty}</td>
+                                        <td className={`py-3 text-left font-bold ${s.dueAmount > 0 ? 'text-red-500' : 'text-emerald-500'}`}>
+                                            {s.dueAmount > 0 ? s.dueAmount : 'Paid'}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                        {sales.length === 0 && <p className="text-center text-gray-400 py-10">کوئی سیلز نہیں ہیں</p>}
+                    </div>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 7. SETTINGS & SECURITY
+        // ==========================================
+        const Settings = ({ data, reload }) => {
+            const { settings } = data;
+            
+            const changePin = async () => {
+                const old = prompt("موجودہ PIN درج کریں:");
+                if (old === settings.adminPin) {
+                    const newPin = prompt("نیا 4 ہندسوں کا PIN درج کریں:");
+                    if (newPin && newPin.length >= 4) {
+                        await dbOp('settings', 'put', { ...settings, adminPin: newPin });
+                        alert("PIN تبدیل ہو گیا۔");
+                        reload();
+                    } else alert("PIN کم از کم 4 ہندسوں کا ہونا چاہیے۔");
+                } else alert("غلط PIN");
+            };
+
+            const downloadBackup = () => {
+                const backupData = JSON.stringify(data);
+                const blob = new Blob([backupData], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `SM_Vintage_Backup_${new Date().toISOString().split('T')[0]}.json`;
+                a.click();
+            };
+
+            const handleRestore = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                if(confirm("خبردار! موجودہ ڈیٹا ڈیلیٹ ہو جائے گا اور بیک اپ ریسٹور ہو گا۔ کیا آپ متفق ہیں؟")) {
+                    const reader = new FileReader();
+                    reader.onload = async (event) => {
+                        try {
+                            const parsed = JSON.parse(event.target.result);
+                            await dbOp('settings', 'put', parsed.settings || settings);
+                            await dbOp('stock', 'clear'); if(parsed.stock) parsed.stock.forEach(s => dbOp('stock', 'put', s));
+                            await dbOp('customers', 'clear'); if(parsed.customers) parsed.customers.forEach(c => dbOp('customers', 'put', c));
+                            await dbOp('sales', 'clear'); if(parsed.sales) parsed.sales.forEach(s => dbOp('sales', 'put', s));
+                            alert("بیک اپ کامیابی سے ریسٹور ہو گیا!");
+                            window.location.reload();
+                        } catch (err) {
+                            alert("فائل کرپٹ ہے یا درست نہیں ہے۔");
+                        }
+                    };
+                    reader.readAsText(file);
+                }
+            };
+
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-2xl font-bold text-dark mb-4">سیٹنگز</h2>
+
+                    <div className="bg-white rounded-3xl p-6 shadow-xl space-y-6">
+                        <div>
+                            <h3 className="font-bold text-lg mb-2 text-primary">سیکیورٹی</h3>
+                            <button onClick={changePin} className="w-full bg-gray-100 text-dark py-4 rounded-2xl font-bold border border-gray-200">
+                                ایڈمن PIN تبدیل کریں
+                            </button>
+                            <p className="text-xs text-center text-gray-400 mt-2">موجودہ ڈیفالٹ PIN: 1234</p>
+                        </div>
+
+                        <hr />
+
+                        <div>
+                            <h3 className="font-bold text-lg mb-2 text-primary">بیک اپ اور ریسٹور</h3>
+                            <div className="space-y-3">
+                                <button onClick={downloadBackup} className="w-full bg-blue-500 text-white py-4 rounded-2xl font-bold shadow-lg">
+                                    ڈیٹا بیک اپ ڈاؤنلوڈ کریں
+                                </button>
+                                
+                                <div className="relative">
+                                    <button className="w-full bg-accent text-white py-4 rounded-2xl font-bold shadow-lg pointer-events-none">
+                                        بیک اپ ریسٹور کریں (Upload)
+                                    </button>
+                                    <input type="file" accept=".json" onChange={handleRestore} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div className="text-center text-gray-400 text-sm mt-10">
+                        SM Vintage Manager v1.0<br/>
+                        100% Offline PWA
+                    </div>
+                </div>
+            );
+        };
+
+        // Render App
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
